@@ -1,13 +1,15 @@
 use std::{collections::HashMap, fs::File};
-use std::fs;
+use std::fs::{self};
 use std::io::{Error, BufReader, BufWriter};
 use std::path::Path;
-use oci_spec::{image::Descriptor, runtime::Mount};
 use std::time::SystemTime;
 use crate::common::string_to_systemtime;
-type Digest=String;
+use crate::labelstore::{LabelstoreInterface, Labelstore};
+pub(crate) type Digest=String;
+type StoreError=String;
 pub struct Store{
     root:String,
+    pub labe_interface: Box<dyn LabelstoreInterface>,
 }
 
 pub struct Status{
@@ -33,46 +35,83 @@ impl  Default for Info {
     }
 }
 impl Store {
-    pub fn new() -> Store {
+    pub fn new(rt:String) -> Store {
         Store{ 
-            root:"/".to_string(),
+            root:rt.clone(),
+            labe_interface:Box::new(Labelstore::new(rt))
          }
     }
-    pub fn info(&self, dgst:Digest)->Result<Info,Error> {
-        let p = self.blobpath(dgst.clone()).unwrap();
-        let metadata  = fs::metadata(p).unwrap();
-        
+    pub fn info(&self, dgst:Digest)->Result<Info,StoreError> {
+        let p = self.blobpath(dgst.clone());
+        let metadata  = fs::metadata(p).map_err(|e|e.to_string())?;
+        let labels = self.labe_interface.get(dgst.clone()).unwrap_or_default();
         Ok(Info{
             digest: dgst.clone(),
             size: metadata.len(),
-            created_at: metadata.created().unwrap(),
-            updated_at: metadata.accessed().unwrap(),
-            labels: HashMap::default(),
+            created_at: metadata.created().map_err(|e|e.to_string())?,
+            updated_at: metadata.accessed().map_err(|e|e.to_string())?,
+            labels: labels,
         })
     } 
 
-    pub fn blobpath(&self, dgst:Digest) -> Result<String,Error>{
+    pub fn blobpath(&self, dgst:Digest) -> String{
         let str_path = Path::new(&self.root.clone()).join("blobs").join(dgst).to_string_lossy().to_string();
-        Ok(str_path)
+        str_path
         
     }
     pub fn read_at(&self, dgst:Digest) -> Result<BufReader<File>,Error> {
-        let p = self.blobpath(dgst).unwrap();
-        let file = File::open(p).unwrap();
+        let p = self.blobpath(dgst);
+        let file = File::open(p)?;
         let reader = BufReader::new(file);
         Ok(reader)
     }
-    pub fn delete(&self,dgst:Digest){
-        let p = self.blobpath(dgst).unwrap();
-        let _ = fs::remove_dir_all(p);
-
+    pub fn delete(&self,dgst:Digest)->Result<(),Error>{
+        let p = self.blobpath(dgst);
+        fs::remove_dir_all(p)?;
+        Ok(())
     }
-    pub fn update(&self,dgst:Digest){
-        let mut info = self.info(dgst).unwrap();
+    pub fn update(&mut self,info: Info, filedpaths: Vec<String>)->Option<Info>{
+        let p = self.blobpath(info.digest.clone());
+        if let Err(_) =  fs::metadata(Path::new(&p)){
+            return None;
+        }
+        let mut labels: HashMap<String,String> = HashMap::new();
+        let mut all = false;
+        if filedpaths.len() == 0{
+            all =true;
+            labels = info.labels.clone()
+        }else{
+            for  x in filedpaths{
+                if x.starts_with("labels."){
+                    let key = x.strip_prefix("labels.").unwrap().to_string();
+                    labels.insert(key.clone(),info.labels.get(&key).unwrap().clone()) ;
+                    continue;
+                }
+    
+                match x.as_str() {
+                 "labels" => {
+                    all = true;
+                    labels = info.labels.clone();
+                 },   
+                  _  =>{
+                    return None;
+                  }
+                }
+            }
+        }
+
+        if all{
+            let _ = self.labe_interface.set(info.digest.clone(), labels);
+        }else{
+            self.labe_interface.update(info.digest.clone(), labels);
+        }
+        
+        
+        let mut info = self.info(info.digest.clone()).unwrap();
         info.updated_at = SystemTime::now();
         //todo ! modify file created time
-
-        todo!()
+   
+        Some(info)
 
     }
     // try walk all file
@@ -88,8 +127,8 @@ impl Store {
         todo!()
     }
 
-    fn total(&self,ingestPath:String)->i64{
-        let t = fs::read_to_string(Path::new(&ingestPath).join("total")).unwrap();
+    fn total(&self,ingest_path:String)->i64{
+        let t = fs::read_to_string(Path::new(&ingest_path).join("total")).unwrap_or("-1".to_string());
         let r = t.parse::<i64>().unwrap();
         r
     }
@@ -97,12 +136,12 @@ impl Store {
     pub fn writer(&self,mref:String, total:i64,expected:Digest)-> Result<BufWriter<File>,Error>{
         //writer should hold One should lock it
         if expected != ""{
-            let p = self.blobpath(expected).unwrap();
+            let p = self.blobpath(expected);
 
         }
         let (path,refp,data) = self.ingest_paths(mref);
         // ensure that the ingest path has been created. todo()!
-        let file = File::open(data).unwrap();
+        let file = File::open(data)?;
         let writer = BufWriter::new(file);
 
         Ok(writer)
