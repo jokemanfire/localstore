@@ -1,15 +1,25 @@
-use chrono::{DateTime, NaiveDateTime, NaiveTime, Timelike, Utc, TimeZone};
+use chrono::{DateTime, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
 use std::time::SystemTime;
+use ring::digest::{self, Digest};
 
 pub fn string_to_systemtime(date_time_str: &str) -> Result<SystemTime, chrono::ParseError> {
-    // 假设字符串格式为 "YYYY-MM-DD HH:mm:ss"
-    let naive_date_time: NaiveDateTime = NaiveDateTime::parse_from_str(date_time_str, "%Y-%m-%d %H:%M:%S")?;
-    
-    // 将NaiveDateTime转换为DateTime<Utc>
+    let naive_date_time: NaiveDateTime =
+        NaiveDateTime::parse_from_str(date_time_str, "%Y-%m-%d %H:%M:%S")?;
+
     let utc_date_time: DateTime<Utc> = Utc.from_utc_datetime(&naive_date_time);
-    
-    // 将DateTime<Utc>转换为SystemTime
+
     let system_time = utc_date_time.into();
-    
+
     Ok(system_time)
+}
+
+
+pub fn compute_sha256(data: &[u8]) -> String {
+    let binding = digest::digest(&digest::SHA256, data);
+    let actual = binding.as_ref();
+    vec_to_hex_string(actual)
+}
+
+fn vec_to_hex_string(vec: &[u8]) -> String {
+    hex::encode(vec)
 }
